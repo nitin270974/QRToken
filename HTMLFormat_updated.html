@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+    <title>Offline HTML Formatter</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: "Segoe UI", Arial, sans-serif;
+            background: #caf0f8;
+            color: #023047;
+        }
+        .container {
+            max-width: 1400px;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+        }
+        h1 {
+            margin-top: 0;
+            text-align: center;
+            color: #0077b6;
+        }
+        .editor-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        .editor-box h3 {
+            margin: 5px 0 8px;
+        }
+        textarea {
+            width: 100%;
+            height: 550px;
+            padding: 15px;
+            resize: vertical;
+            border: 2px solid #90e0ef;
+            border-radius: 10px;
+            outline: none;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            background: #f8fafc;
+            color: #111827;
+        }
+        textarea:focus {
+            border-color: #0077b6;
+        }
+        .buttons {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 20px;
+        }
+        button {
+            padding: 11px 20px;
+            border: none;
+            border-radius: 8px;
+            background: #0077b6;
+            color: white;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #023e8a;
+        }
+        .copy-btn {
+            background: #16a34a;
+        }
+        .copy-btn:hover {
+            background: #15803d;
+        }
+        .clear-btn {
+            background: #dc2626;
+        }
+        .clear-btn:hover {
+            background: #b91c1c;
+        }
+        #message {
+            min-height: 25px;
+            margin-top: 15px;
+            text-align: center;
+            font-weight: 600;
+        }
+        @media screen and (max-width: 767px) {
+            body {
+                padding: 10px;
+            }
+            .container {
+                padding: 12px;
+            }
+            .editor-container {
+                grid-template-columns: 1fr;
+            }
+            textarea {
+                height: 350px;
+            }
+            button {
+                flex: 1;
+                min-width: 120px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Offline HTML Formatter</h1>
+        <div class="editor-container">
+            <div class="editor-box">
+                <h3>Input HTML</h3>
+                <textarea
+                    id="inputHTML"
+                    placeholder="Paste your HTML code here..."></textarea>
+            </div>
+            <div class="editor-box">
+                <h3>Formatted HTML</h3>
+                <textarea
+                    id="outputHTML"
+                    placeholder="Formatted HTML will appear here..."
+                    readonly></textarea>
+            </div>
+        </div>
+        <div class="buttons">
+<button onclick="formatJavaScript()">
+Format JavaScript
+</button>
+            <button onclick="formatHTML()">
+                Format HTML
+            </button>
+<button onclick="formatCSS()">
+Format CSS
+</button>
+            <button class="copy-btn"
+                    onclick="copyHTML()">
+                Copy
+            </button>
+            <button onclick="downloadHTML()">
+                Download HTML
+            </button>
+            <button class="clear-btn"
+                    onclick="clearHTML()">
+                Clear
+            </button>
+        </div>
+        <div id="message"></div>
+    </div>
+    <script>
+let currentFormat = "html";
+function formatHTML()
+{
+    const input = document.getElementById("inputHTML").value;
+
+    if(input.trim() === "")
+    {
+        showMessage("Please paste HTML code first.", "red");
+        return;
+    }
+
+    currentFormat = "html";
+
+    const INDENT = "    ";
+    const voidTags = new Set([
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr"
+    ]);
+
+    const inlineTags = new Set([
+        "span", "a", "b", "strong", "i", "em", "small", "label",
+        "code", "mark", "sub", "sup"
+    ]);
+
+    function tagName(token)
+    {
+        const m = token.match(/^<\/?\s*([A-Za-z][A-Za-z0-9:-]*)/);
+        return m ? m[1].toLowerCase() : "";
+    }
+
+    function normalizeTag(token)
+    {
+        let out = "";
+        let quote = "";
+        let spacePending = false;
+
+        for(let i = 0; i < token.length; i++)
+        {
+            const ch = token[i];
+
+            if(quote)
+            {
+                out += ch;
+                if(ch === quote && token[i - 1] !== "\\") quote = "";
+                continue;
+            }
+
+            if(ch === '"' || ch === "'")
+            {
+                if(spacePending && out && !out.endsWith(" ") && !out.endsWith("<")) out += " ";
+                spacePending = false;
+                quote = ch;
+                out += ch;
+                continue;
+            }
+
+            if(/\s/.test(ch))
+            {
+                spacePending = true;
+                continue;
+            }
+
+            if(spacePending)
+            {
+                if(out && !out.endsWith(" ") && !out.endsWith("<") && ch !== ">" && ch !== "/") out += " ";
+                spacePending = false;
+            }
+
+            out += ch;
+        }
+
+        return out.trim();
+    }
+
+    /*
+       Tokenizer: reads a COMPLETE tag even when attributes are on many lines.
+       It also respects > characters inside quoted attribute values.
+    */
+    function tokenizeHTML(html)
+    {
+        const tokens = [];
+        let i = 0;
+
+        while(i < html.length)
+        {
+            if(html.startsWith("<!--", i))
+            {
+                const end = html.indexOf("-->", i + 4);
+                const stop = end === -1 ? html.length : end + 3;
+                tokens.push({type:"comment", value:html.slice(i, stop)});
+                i = stop;
+                continue;
+            }
+
+            if(html[i] === "<")
+            {
+                let j = i + 1;
+                let quote = "";
+
+                while(j < html.length)
+                {
+                    const ch = html[j];
+
+                    if(quote)
+                    {
+                        if(ch === quote && html[j - 1] !== "\\") quote = "";
+                    }
+                    else if(ch === '"' || ch === "'")
+                    {
+                        quote = ch;
+                    }
+                    else if(ch === ">")
+                    {
+                        j++;
+                        break;
+                    }
+
+                    j++;
+                }
+
+                tokens.push({type:"tag", value:html.slice(i, j)});
+                i = j;
+            }
+            else
+            {
+                let j = html.indexOf("<", i);
+                if(j === -1) j = html.length;
+                tokens.push({type:"text", value:html.slice(i, j)});
+                i = j;
+            }
+        }
+
+        return tokens;
+    }
+
+    const tokens = tokenizeHTML(input);
+    const lines = [];
+    let level = 0;
+
+    function addLine(text, atLevel = level)
+    {
+        lines.push(INDENT.repeat(Math.max(0, atLevel)) + text);
+    }
+
+    for(let i = 0; i < tokens.length; i++)
+    {
+        const token = tokens[i];
+
+        if(token.type === "comment")
+        {
+            addLine(token.value.trim());
+            continue;
+        }
+
+        if(token.type === "text")
+        {
+            const text = token.value.replace(/\s+/g, " ").trim();
+            if(!text) continue;
+
+            /* Keep text following an inline element on the same line. */
+            if(lines.length && /<\/(span|a|b|strong|i|em|small|label|code|mark|sub|sup)>$/i.test(lines[lines.length - 1].trim()))
+            {
+                lines[lines.length - 1] += text;
+            }
+            else
+            {
+                addLine(text);
+            }
+            continue;
+        }
+
+        let tag = normalizeTag(token.value);
+
+        if(/^<!DOCTYPE/i.test(tag) || /^<\?/.test(tag) || /^<![^-]/.test(tag))
+        {
+            addLine(tag);
+            continue;
+        }
+
+        if(/^<\//.test(tag))
+        {
+            level = Math.max(0, level - 1);
+            addLine(tag);
+            continue;
+        }
+
+        const name = tagName(tag);
+        const selfClosing = /\/>$/.test(tag) || voidTags.has(name);
+
+        /* Collapse simple inline tag + text + closing tag to one line. */
+        if(inlineTags.has(name) && !selfClosing)
+        {
+            const textToken = tokens[i + 1];
+            const closeToken = tokens[i + 2];
+
+            if(textToken && textToken.type === "text" &&
+               closeToken && closeToken.type === "tag" &&
+               new RegExp("^<\\/\\s*" + name + "\\s*>", "i").test(closeToken.value.trim()))
+            {
+                const inlineText = textToken.value.replace(/\s+/g, " ").trim();
+                addLine(tag + inlineText + normalizeTag(closeToken.value));
+                i += 2;
+                continue;
+            }
+        }
+
+        addLine(tag);
+
+        if(!selfClosing)
+        {
+            level++;
+        }
+    }
+
+    document.getElementById("outputHTML").value = lines.join("\n").trim();
+    showMessage("HTML formatted successfully.", "#16a34a");
+}
+
+        async function copyHTML() {
+            const output =
+                document.getElementById("outputHTML");
+            if (output.value.trim() === "") {
+                showMessage(
+                    "Nothing to copy.",
+                    "red"
+                );
+                return;
+            }
+            try {
+                await navigator.clipboard.writeText(
+                    output.value
+                );
+                showMessage(
+                    "Formatted HTML copied.",
+                    "#16a34a"
+                );
+            }
+            catch (error) {
+                /*
+                    Offline/file fallback
+                */
+                output.removeAttribute("readonly");
+                output.select();
+                document.execCommand("copy");
+                output.setAttribute(
+                    "readonly",
+                    "readonly"
+                );
+                showMessage(
+                    "Formatted HTML copied.",
+                    "#16a34a"
+                );
+            }
+        }
+        function downloadHTML() {
+            const output =
+                document.getElementById(
+                    "outputHTML"
+                ).value;
+            if (output.trim() === "") {
+                showMessage(
+                    "Nothing to download.",
+                    "red"
+                );
+                return;
+            }
+            const blob = new Blob(
+                [output],
+                {
+                    type: "text/html;charset=utf-8"
+                }
+            );
+            const url =
+                URL.createObjectURL(blob);
+            const link =
+                document.createElement("a");
+            link.href = url;
+            link.download =
+                "formatted.html";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            showMessage(
+                "Formatted HTML downloaded.",
+                "#16a34a"
+            );
+        }
+        function clearHTML() {
+            document.getElementById(
+                "inputHTML"
+            ).value = "";
+            document.getElementById(
+                "outputHTML"
+            ).value = "";
+            document.getElementById(
+                "message"
+            ).innerText = "";
+        }
+        function showMessage(text, color) {
+            const message =
+                document.getElementById("message");
+            message.innerText = text;
+            message.style.color = color;
+        }
+function formatCSS()
+{
+    const input =
+        document.getElementById("inputHTML").value;
+    if(input.trim() === "")
+    {
+        showMessage(
+            "Please paste CSS code first.",
+            "red"
+        );
+        return;
+    }
+    let css = input.trim();
+    let output = "";
+    let indentLevel = 0;
+    const indent = "    ";
+    let inString = false;
+    let stringChar = "";
+    let inComment = false;
+    for(let i = 0; i < css.length; i++)
+    {
+        const char = css[i];
+        const next = css[i + 1];
+        /*
+            CSS comment start
+        */
+        if(
+            !inString &&
+            char === "/" &&
+            next === "*"
+        )
+        {
+            inComment = true;
+            output += "/*";
+            i++;
+            continue;
+        }
+        /*
+            CSS comment end
+        */
+        if(
+            inComment &&
+            char === "*" &&
+            next === "/"
+        )
+        {
+            output += "*/";
+            i++;
+            inComment = false;
+            continue;
+        }
+        if(inComment)
+        {
+            output += char;
+            continue;
+        }
+        /*
+            Quoted strings
+        */
+        if(
+            (char === '"' || char === "'")
+        )
+        {
+            if(
+                !inString
+            )
+            {
+                inString = true;
+                stringChar = char;
+            }
+            else if(
+                stringChar === char &&
+                css[i - 1] !== "\\"
+            )
+            {
+                inString = false;
+            }
+            output += char;
+            continue;
+        }
+        if(inString)
+        {
+            output += char;
+            continue;
+        }
+        /*
+            Opening {
+        */
+        if(char === "{")
+        {
+            output =
+                output.trimEnd();
+            output += " {\n";
+            indentLevel++;
+            output +=
+                indent.repeat(indentLevel);
+            continue;
+        }
+        /*
+            Semicolon
+        */
+        if(char === ";")
+        {
+            output =
+                output.trimEnd();
+            output += ";\n";
+            output +=
+                indent.repeat(indentLevel);
+            continue;
+        }
+        /*
+            Closing }
+        */
+        if(char === "}")
+        {
+            indentLevel =
+                Math.max(
+                    0,
+                    indentLevel - 1
+                );
+            output =
+                output.trimEnd();
+            output +=
+                "\n" +
+                indent.repeat(indentLevel) +
+                "}\n";
+            output +=
+                indent.repeat(indentLevel);
+            continue;
+        }
+        /*
+            Remove unnecessary whitespace
+        */
+        if(/\s/.test(char))
+        {
+            if(
+                output.length > 0 &&
+                !/\s/.test(
+                    output[output.length - 1]
+                )
+            )
+            {
+                output += " ";
+            }
+            continue;
+        }
+        /*
+            Colon formatting
+        */
+        if(char === ":")
+        {
+            output =
+                output.trimEnd();
+            output += ": ";
+            continue;
+        }
+        output += char;
+    }
+    /*
+        Clean output
+    */
+    output = output
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n[ \t]+\n/g, "\n\n")
+        .trim();
+    document.getElementById(
+        "outputHTML"
+    ).value = output;
+    showMessage(
+        "CSS formatted successfully.",
+        "#16a34a"
+    );
+}
+function formatJavaScript()
+{
+    const input =
+        document.getElementById("inputHTML").value;
+    if(input.trim() === "")
+    {
+        showMessage(
+            "Please paste JavaScript code first.",
+            "red"
+        );
+        return;
+    }
+    currentFormat = "js";
+    let code = input.trim();
+    let output = "";
+    let indentLevel = 0;
+    const indent = "    ";
+    let inString = false;
+    let stringChar = "";
+    let inSingleComment = false;
+    let inMultiComment = false;
+    let parentheses = 0;
+    let brackets = 0;
+    function addIndent()
+    {
+        output += indent.repeat(indentLevel);
+    }
+    function newLine()
+    {
+        output = output.trimEnd();
+        if(!output.endsWith("\n"))
+        {
+            output += "\n";
+        }
+        addIndent();
+    }
+    for(let i = 0; i < code.length; i++)
+    {
+        const char = code[i];
+        const next = code[i + 1];
+        const previous = code[i - 1];
+        /* =========================
+           SINGLE LINE COMMENT
+           ========================= */
+        if(inSingleComment)
+        {
+            output += char;
+            if(char === "\n")
+            {
+                inSingleComment = false;
+                addIndent();
+            }
+            continue;
+        }
+        /* =========================
+           MULTI LINE COMMENT
+           ========================= */
+        if(inMultiComment)
+        {
+            output += char;
+            if(char === "*" && next === "/")
+            {
+                output += "/";
+                i++;
+                inMultiComment = false;
+            }
+            continue;
+        }
+        /* =========================
+           STRING
+           ========================= */
+        if(inString)
+        {
+            output += char;
+            if(
+                char === stringChar &&
+                previous !== "\\"
+            )
+            {
+                inString = false;
+            }
+            continue;
+        }
+        /* =========================
+           STRING START
+           ========================= */
+        if(
+            char === '"' ||
+            char === "'" ||
+            char === "`"
+        )
+        {
+            inString = true;
+            stringChar = char;
+            output += char;
+            continue;
+        }
+        /* =========================
+           COMMENTS
+           ========================= */
+        if(char === "/" && next === "/")
+        {
+            output += "//";
+            i++;
+            inSingleComment = true;
+            continue;
+        }
+        if(char === "/" && next === "*")
+        {
+            output += "/*";
+            i++;
+            inMultiComment = true;
+            continue;
+        }
+        /* =========================
+           PARENTHESES
+           ========================= */
+        if(char === "(")
+        {
+            parentheses++;
+            output = output.trimEnd();
+            output += "(";
+            continue;
+        }
+        if(char === ")")
+        {
+            parentheses =
+                Math.max(0, parentheses - 1);
+            output = output.trimEnd();
+            output += ")";
+            continue;
+        }
+        /* =========================
+           ARRAY BRACKETS
+           ========================= */
+        if(char === "[")
+        {
+            brackets++;
+            output += "[";
+            continue;
+        }
+        if(char === "]")
+        {
+            brackets =
+                Math.max(0, brackets - 1);
+            output = output.trimEnd();
+            output += "]";
+            continue;
+        }
+        /* =========================
+           OPENING BRACE
+           ========================= */
+        if(char === "{")
+        {
+            output = output.trimEnd();
+            output += " {\n";
+            indentLevel++;
+            addIndent();
+            continue;
+        }
+        /* =========================
+           CLOSING BRACE
+           ========================= */
+        if(char === "}")
+        {
+            indentLevel =
+                Math.max(0, indentLevel - 1);
+            output = output.trimEnd();
+            output += "\n";
+            addIndent();
+            output += "}";
+            /*
+                Add newline unless followed by:
+                ;
+                ,
+                )
+                ]
+                else
+                catch
+                finally
+            */
+            const remaining =
+                code.substring(i + 1).trimStart();
+            if(
+                remaining.startsWith("else") ||
+                remaining.startsWith("catch") ||
+                remaining.startsWith("finally")
+            )
+            {
+                output += " ";
+            }
+            else if(
+                next !== ";" &&
+                next !== "," &&
+                next !== ")" &&
+                next !== "]"
+            )
+            {
+                output += "\n";
+                addIndent();
+            }
+            continue;
+        }
+        /* =========================
+           SEMICOLON
+           ========================= */
+        if(char === ";")
+        {
+            output = output.trimEnd();
+            output += ";";
+            /*
+                Do not create newline inside
+                for(...)
+            */
+            if(parentheses === 0)
+            {
+                output += "\n";
+                addIndent();
+            }
+            continue;
+        }
+        /* =========================
+           COMMA
+           ========================= */
+        if(char === ",")
+        {
+            output = output.trimEnd();
+            output += ", ";
+            continue;
+        }
+        /* =========================
+           WHITESPACE
+           ========================= */
+        if(/\s/.test(char))
+        {
+            if(
+                output.length > 0 &&
+                !/\s/.test(
+                    output[output.length - 1]
+                )
+            )
+            {
+                output += " ";
+            }
+            continue;
+        }
+        /* =========================
+           OPERATORS
+           ========================= */
+        if(
+            char === "=" &&
+            next !== ">" &&
+            previous !== "=" &&
+            next !== "="
+        )
+        {
+            output = output.trimEnd();
+            output += " = ";
+            continue;
+        }
+        /* =========================
+           NORMAL CHARACTER
+           ========================= */
+        output += char;
+    }
+    /* Clean output */
+    output = output
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    document.getElementById(
+        "outputHTML"
+    ).value = output;
+    showMessage(
+        "JavaScript formatted successfully.",
+        "#16a34a"
+    );
+}
+    </script>
+</body>
+</html>
